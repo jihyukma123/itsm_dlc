@@ -85,6 +85,41 @@ class ItsmAuthClient:
     async def aclose(self) -> None:
         await self._http.aclose()
 
+    async def ticket_request_once(
+        self,
+        method: str,
+        path: str,
+        *,
+        delegated_token: str,
+        params: Any = None,
+        content: bytes | None = None,
+        headers: dict[str, str] | None = None,
+        timeout: float | None = None,
+    ) -> httpx.Response:
+        """사용자 위임 티켓 요청을 정확히 한 번 수행합니다.
+
+        재시도·토큰 갱신·오류 문구 변환은 이 경계 바깥 TicketOperations가
+        소유합니다. 원본 응답은 ticket gateway adapter만 소비합니다.
+        """
+        supplied = headers or {}
+        allowed = {"Idempotency-Key", "Content-Type", "If-Match"}
+        if any(name not in allowed for name in supplied):
+            raise ValueError("ticket request contains a non-allowlisted header")
+        request_headers = {"Authorization": f"Bearer {delegated_token}", **supplied}
+        try:
+            return await self._http.request(
+                method,
+                path,
+                headers=request_headers,
+                params=params,
+                content=content,
+                timeout=timeout,
+            )
+        except httpx.TimeoutException as exc:
+            raise ItsmUnavailableError("timeout") from exc
+        except httpx.TransportError as exc:
+            raise ItsmUnavailableError("transport") from exc
+
     async def _request(self, method: str, path: str, *, token: str | None = None, **kwargs: Any) -> Any:
         headers = {"Authorization": f"Bearer {token}"} if token else {}
         try:

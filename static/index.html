@@ -28,7 +28,10 @@
         <button id="chat-reset" type="button" class="link">대화 초기화</button>
       </div>
       <p id="agent-status" class="muted"></p>
-      <div id="chat-log" class="chat-log"></div>
+      <div id="chat-log" class="chat-log">
+        <div id="chat-history" aria-label="이전 대화"></div>
+        <div id="chat-live" role="status" aria-live="polite" aria-relevant="additions" aria-atomic="false"></div>
+      </div>
       <form id="chat-form" class="chat-form">
         <textarea id="chat-input" rows="2" placeholder="메시지를 입력하세요 (Enter 전송, Shift+Enter 줄바꿈)"></textarea>
         <button id="chat-send" type="submit">전송</button>

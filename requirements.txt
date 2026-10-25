@@ -27,6 +27,8 @@ charset-normalizer==3.5.2
     # via requests
 click==8.5.0
     # via uvicorn
+coverage==7.17.0
+    # via -r requirements.in
 cryptography==50.0.2
     # via pyjwt
 fastapi==0.162.0

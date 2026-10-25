@@ -1,0 +1,33 @@
+{
+  "stage": "functional-design",
+  "unit": "u4-release-assurance",
+  "upstream_ids": [
+    "AC4.1.1",
+    "AC4.1.2",
+    "AC4.1.3",
+    "AC4.1.4",
+    "AC4.1.5",
+    "AC4.1.6",
+    "AC5.1.1",
+    "AC5.1.2",
+    "AC5.1.3",
+    "AC5.1.4",
+    "AC5.1.5",
+    "AC5.1.6"
+  ],
+  "coverage": [
+    {"id": "AC4.1.1", "status": "OK", "target": "BR4.1, BR4.2"},
+    {"id": "AC4.1.2", "status": "OK", "target": "BR4.2"},
+    {"id": "AC4.1.3", "status": "OK", "target": "BR4.3"},
+    {"id": "AC4.1.4", "status": "OK", "target": "BR4.4"},
+    {"id": "AC4.1.5", "status": "OK", "target": "BR4.5"},
+    {"id": "AC4.1.6", "status": "OK", "target": "BR4.6"},
+    {"id": "AC5.1.1", "status": "OK", "target": "BR4.1, BR4.9"},
+    {"id": "AC5.1.2", "status": "OK", "target": "BR4.7"},
+    {"id": "AC5.1.3", "status": "OK", "target": "BR4.8, BR4.13, BR4.14, BR4.15"},
+    {"id": "AC5.1.4", "status": "OK", "target": "BR4.9"},
+    {"id": "AC5.1.5", "status": "OK", "target": "BR4.10, BR4.11"},
+    {"id": "AC5.1.6", "status": "OK", "target": "BR4.12"}
+  ],
+  "reverse": []
+}

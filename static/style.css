@@ -81,5 +81,13 @@ button { font: inherit; cursor: pointer; }
 .msg.user { background: #e3ecff; margin-left: auto; }
 .msg.assistant { background: #ffffff; border: 1px solid var(--border); }
 .msg.error { background: #ffe9e6; color: #a1281b; }
+.ticket-presentation { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
+.ticket-presentation p { margin: 0 0 8px; }
+.ticket-fields { display: grid; grid-template-columns: minmax(90px, auto) 1fr; margin: 0; gap: 4px 10px; }
+.ticket-fields dt { color: var(--muted); font-weight: 600; }
+.ticket-fields dd { margin: 0; overflow-wrap: anywhere; }
+.ticket-items { display: grid; gap: 8px; }
+.ticket-item { padding: 8px; border: 1px solid var(--border); border-radius: 6px; }
+.ticket-actions { color: var(--accent); font-weight: 600; }
 .chat-form { display: flex; gap: 6px; margin-top: 8px; }
 .chat-form textarea { flex: 1; min-width: 0; resize: vertical; padding: 6px 8px; font: inherit; }

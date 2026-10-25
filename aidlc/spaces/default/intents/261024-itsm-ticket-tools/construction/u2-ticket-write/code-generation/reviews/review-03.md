@@ -1,0 +1,36 @@
+## Review
+
+**Verdict:** NOT-READY
+**Reviewer:** aidlc-architecture-reviewer-agent
+**Date:** 2026-10-25T15:24:22Z
+**Iteration:** 1
+**Verdict Dictated:** no
+
+### Findings
+
+| ID | Severity | Location | Finding | Required action | Status |
+|---|---|---|---|---|---|
+| R-01 | Major | app/ticketing/create_repository.py > `TicketCreateAttemptRepository.begin_reconciliation` | `status='ambiguous' OR claim_deadline_at <= now` 조건 때문에 첫 recovery owner가 설정된 뒤에도 상태가 `ambiguous`인 동안 현재 recovery claim ID를 관찰한 호출이 deadline 전에 새 recovery ID로 owner를 교체할 수 있다. 이는 active recovery owner를 탈취하지 않는다는 SEC-U2-07과 계획 Step 8을 직접 위반하며, 현재 테스트는 active send claim만 검사한다. | 최초 ambiguous 진입과 이미 active인 recovery claim을 구분해 active recovery는 deadline 전 교체할 수 없도록 CAS predicate를 수정하고, recovery ID를 알고 있는 두 번째 caller의 조기 takeover가 실패하며 stale recovery 결과가 0건 쓰이는 repository 동시성 테스트를 추가한다. | Resolved (reviewer) |
+| R-02 | Major | app/ticketing/create_operations.py > `prepare`, `revise`, `_publish_review` 호출 순서 | 새 draft의 schema 외 catalog·관계·시간 normalization이 유효한지 확인하기 전에 기존 `prepared` ledger를 `terminal_failure`로 만들고 pending review를 무효화한다. BR3.2는 새 **valid** review를 저장할 때만 기존 권한을 교체하도록 정했으므로, 사용자가 모호하거나 폐기된 catalog 값으로 revise를 시도하기만 해도 이전의 유효한 검토가 복구 불가능하게 사라진다. | 새 draft의 catalog resolution과 normalization을 부작용 없이 먼저 완료한 뒤 기존 row terminalization과 pending invalidation을 수행하도록 순서를 바꾸고, invalid revise/prepare가 기존 pending과 prepared row를 그대로 유지하며 POST 0회인 테스트를 추가한다. | Resolved (reviewer) |
+| R-03 | Major | app/ticketing/create_operations.py > `confirm` 및 `_republish_existing_review` | consume 후 bind 중 예외를 같은 process에서 잡은 경우에만 기존 attempt를 재게시한다. 실제 process가 `consume_once` commit 직후 종료되면 재시작 후 pending은 `consumed`여서 `_pending_matches`가 거부하고, 다음 prepare는 기존 row를 닫고 새 attempt/key를 만든다. 따라서 C-04의 “same attempt/key/bytes를 보존한 새 review와 새 explicit confirmation” crash 계약은 구현되지 않았고, 이름에 crash가 들어간 테스트도 repository method가 한 번 예외를 던지는 동일-process 모의일 뿐 process restart를 재현하지 않는다. | 재시작 후 `consumed` pending과 evidence 없는 기존 `prepared` attempt를 인식해 같은 attempt/key/bytes로 새 pending review를 게시하는 durable recovery 경로를 구현하고, 첫 process가 consume까지만 commit한 DB를 두 번째 repository/operations instance가 복구하는 테스트를 추가한다. | Resolved (reviewer) |
+| R-04 | Major | app/ticketing/create_operations.py > `_send`의 token-expired refresh branch | refresh reservation 사용과 session credential atomic commit 뒤 process가 success return 전에 종료되면 ledger는 `retryable_no_apply`, pending은 `consumed`로 남는다. 다음 요청은 이 attempt를 다시 진입할 경로가 없어 committed credential로 남은 budget의 send claim을 얻지 못하며, 새 prepare는 새 key와 새 attempt를 만든다. SEC-U2-10/C-01의 post-commit response-loss 복구와 “second refresh 0” 계약을 충족하지 않는다. 현재 테스트는 한 coroutine 안에서 refresh 성공 직후 재전송하는 경우만 검증한다. | `retryable_no_apply`와 durable reservation을 재시작 후 복원하고, session store에 이미 commit된 same-binding credential로 refresh 재호출 없이 기존 attempt의 새 send claim을 얻는 경로를 구현한다. credential commit 직후 response loss를 만든 뒤 새 service instance에서 같은 key/bytes·global count로 재개되고 refresh invocation이 총 1회인 통합 테스트를 추가한다. | Resolved (reviewer) |
+| R-05 | Minor | tests/test_ticket_create_security.py > `SECRET_CANARIES` 및 safe-output 테스트 | U2 전용 idempotency key와 canonical bytes canary는 dataclass `repr` 및 정상 safe result/presentation에서만 검사된다. 계획 Step 11과 SEC-U2-12가 요구한 application log, API response, stdout/stderr, traceback·assertion diff의 의도적 실패 경계에는 이 두 U2 전용 secret-like 값이 주입되지 않아 `code-summary.md`의 전 경계 노출 0건 주장이 현재 증거보다 넓다. | idempotency key와 canonical bytes를 포함하는 의도적 실패 subprocess 및 API/log capture를 추가하고, stdout·stderr·traceback·assertion diff·HTTP body·log에서 두 canary가 0건인지 검증하거나 summary의 주장을 실제 검증 범위로 제한한다. | Resolved (reviewer) |
+| R-06 | Critical | `app/ticketing/create_operations.py` > `_recover_consumed_pending` and `app/ticketing/capability.py` > `CredentialRefreshReservationVerifier.restore` | `reserved` 복구가 동일 process boot인지 확인하지 않고 `restore(... require_current_boot=False)`를 사용하며 active-reservation registry도 없다. 따라서 같은 boot에서 refresh credential commit 뒤 원래 coroutine이 결과를 기록하기 전 또는 응답 유실 뒤 observer가 `committed`/`failed`를 기록하고 send를 재개할 수 있다. 이는 `security-design.md`의 SEC-U2-10과 57–59행의 “same-boot observer write·recovery 0, different-boot에서만 generation recovery” 경계를 직접 위반하며 해당 race를 검증하는 테스트도 없다. | Process-local active-reservation registry를 실제 조립에 추가하고 reservation CAS 직후 등록, durable outcome 기록 뒤 제거하라. 동일 boot의 모든 observer는 registry 포함 여부와 무관하게 write·recovery·refresh 없이 현재 상태만 반환하고, creator boot가 다른 실제 restart에서만 generation 비교 CAS를 허용하라. commit-before-registry, same-boot missing-registry, owner cancellation, different-boot restart 테스트를 추가하라. | New |
+| R-07 | Major | `app/ticketing/capability.py` > `CredentialRefreshPortV1.refresh_delegated_capability_once` and `CredentialRefreshReservationV1` | 구현 port는 `TicketRequestCapability \| None`을 반환하지만 공유 C-01 계약은 `Result[TicketRequestCapability, SafeErrorV1]`을 요구한다. 또한 구현 reservation은 `operation_deadline`과 `creator_boot_id`를 필수 생성자 필드로 만들었지만 C-01 schema에는 이 필수 외부 필드가 없다. 현재 signature 검사 테스트는 parameter 이름만 확인해 provider/consumer result 및 schema 호환성 파손을 잡지 못한다. | C-01의 versioned shared schema와 실제 Python port를 하나로 맞춰 typed safe failure를 반환하고, opaque envelope 내부 claim과 외부 필드의 required/optional 규칙을 계약대로 정렬하라. Provider와 consumer가 같은 fixture로 입력 schema, 성공 result, safe failure result를 모두 검증하도록 하라. | New |
+| R-08 | Major | `app/config.py` > `_load_refresh_key_ring` and `app/ticketing/capability.py` > envelope parsing | 설정 검증은 `kid`가 비어 있지 않은지만 확인하지만 signer는 ASCII 인코딩을 수행하고 verifier는 `.` 구분자로 envelope를 분해한다. 따라서 `kid="2026.10"`은 설정 단계에서 승인된 뒤 모든 envelope가 잘못 파싱되고, 비 ASCII `kid`는 첫 refresh에서 `UnicodeEncodeError`를 낸다. “malformed configuration은 refresh 활성화 전에 fail closed”라는 계획 및 요약 주장과 다르다. | `kid`를 envelope-safe ASCII 문자 집합과 길이로 startup 시 검증하고 `.` 및 비 ASCII 값을 거부하라. current/previous key 모두에 동일 검증을 적용하고 dotted/non-ASCII/과대 길이 `kid`가 설정 단계에서 fail closed하는 테스트를 추가하라. | New |
+| R-09 | Major | `scripts/changed_line_coverage.py` 실행 결과와 `source-manifest.json`의 U2 소스 범위 | U2 coverage 증거는 source manifest의 29개 claim을 기준으로 계산되지 않는다. 실제 실행은 merge-base 이후 모든 `app/**/*.py`를 포함해 `app/agent/context.py`, `app/agent/routes.py`, `app/main.py`, `app/schemas.py`, U1 read 모델·operation·repository 등 U2 manifest 밖 변경도 합산했다. 현재 87.92% 수치는 통과하지만 “U2 changed application lines” 80%를 manifest-bound evidence로 증명하지 않는다. | Coverage helper에 source-manifest 또는 명시적 approved path set을 입력해 U2가 claim한 application source만 분모로 계산하고, unclaimed changed source가 있으면 별도 실패로 보고하라. 그 명령과 결과를 `unit-test-instructions.md`와 `code-summary.md`에 반영하라. | New |
+
+### Validation Tool Results
+
+| Tool | Result | Interpretation |
+|---|---|---|
+| U2 exact pytest command | PASS: 226 passed in 2.98s | 현재 자동화 회귀는 모두 통과했지만 same-boot observer와 C-01 result 계약 결함을 검출하지 않는다. |
+| Repository-wide pytest | PASS: 279 passed in 3.40s | 기존 회귀는 green이다. |
+| U2 coverage pytest | PASS: 219 passed in 3.56s | Coverage JSON 생성용 테스트는 통과했다. |
+| Changed-line coverage helper | PASS: 2052/2334, 87.92% | 80%는 넘지만 U2 source manifest 밖 application 파일을 함께 합산해 Unit-bound evidence가 아니다. |
+| JSON parsing | PASS: source manifest와 traceability 모두 parse 성공 | 구조화 산출물은 유효한 JSON이다. |
+| `git diff --check` | PASS | whitespace 오류가 없다. |
+
+### Summary
+
+전체 테스트는 통과했지만 refresh의 핵심 same-boot 소유권 경계가 구현되지 않아 실제 경쟁·응답 유실 상황에서 승인된 one-shot 복구 모델을 보장하지 못한다. C-01 result/schema 호환성, key ID startup 검증, Unit-bound coverage 증거도 수선 후 재검토가 필요하다.

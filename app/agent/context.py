@@ -7,9 +7,14 @@ OpenAI API 키는 넣지 않습니다.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from app.session import CurrentUser
+
+if TYPE_CHECKING:
+    from app.ticketing.lifecycle import CurrentTurnEvidenceV1
+    from app.ticketing.tools import TicketRuntime
 
 
 @dataclass(frozen=True)
@@ -19,15 +24,26 @@ class AgentUserContext:
     display_name: str
     role: str
     permissions: frozenset[str]
+    # Runner context 내부에서만 쓰이며 function-tool schema나 직렬화 경계에 포함되지 않는다.
+    ticket_runtime: TicketRuntime | None = field(default=None, repr=False, compare=False)
+    current_turn_evidence: CurrentTurnEvidenceV1 | None = field(default=None, repr=False, compare=False)
 
     @classmethod
-    def from_current_user(cls, user: CurrentUser) -> AgentUserContext:
+    def from_current_user(
+        cls,
+        user: CurrentUser,
+        *,
+        ticket_runtime: TicketRuntime | None = None,
+        current_turn_evidence: CurrentTurnEvidenceV1 | None = None,
+    ) -> AgentUserContext:
         return cls(
             user_id=user.id,
             username=user.username,
             display_name=user.display_name,
             role=user.role,
             permissions=user.permissions,
+            ticket_runtime=ticket_runtime,
+            current_turn_evidence=current_turn_evidence,
         )
 
     def has_permission(self, code: str) -> bool:

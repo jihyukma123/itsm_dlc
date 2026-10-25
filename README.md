@@ -3,8 +3,8 @@
 사내 IT 서비스 관리(ITSM) 시스템을 쓰는 동료들을 돕는 대화형 도우미입니다.
 OpenAI Agents SDK(`Agent` + `Runner`)로 실제 모델과 대화하며, 기존 ITSM 시스템에 **연동 클라이언트(`client_id=itsm-agent`)로 붙는 별도 서비스**입니다.
 
-- 현재 상태: 사용자 전환·세션, ITSM 위임 토큰 발급·갱신, 채팅 API·화면, 대화 이력까지 동작합니다.
-- **Agent 에는 아직 도구가 없습니다** (`app/agent/assistant.py` 의 `TOOLS = []`). 그래서 지금은 ITSM 데이터를 조회하거나 바꿀 수 없습니다.
+- 현재 상태: 사용자 전환·세션, ITSM 위임 토큰 발급·갱신, 채팅 API·화면, 대화 이력과 세 티켓 도구까지 동작합니다.
+- Agent에는 정확히 `ticket_read`, `ticket_write`, `ticket_update` 세 function tool만 등록됩니다. 자격증명은 서버 측 요청 capability에만 있고 모델 입력과 tool schema에는 포함되지 않습니다.
 - ITSM 시스템의 소스 코드는 이 프로젝트에 없습니다. ITSM 에 대해 알 수 있는 것은 ITSM 팀이 전달한 **`docs/itsm/` 의 연동 문서**와 실행 중인 ITSM API 뿐입니다.
 
 > ⚠️ ITSM 개발 환경의 티켓은 모두 실험용 모의 데이터입니다.
@@ -20,7 +20,7 @@ OpenAI Agents SDK(`Agent` + `Runner`)로 실제 모델과 대화하며, 기존 I
                                           ├─ app/agent/
                                           │    ├─ routes.py      /api/agent/* (세션 필수)
                                           │    ├─ service.py     Runner.run 실행, SDK SQLiteSession 대화 이력, 오류 → 원인 안내
-                                          │    ├─ assistant.py   Agent 정의, 지침, TOOLS = [] (도구 추가 위치)
+                                          │    ├─ assistant.py   Agent 정의, 지침, 정확히 세 티켓 도구 등록
                                           │    └─ context.py     AgentUserContext (실행 context)
                                           ├─ app/db.py           data/agent.db (sessions)
                                           └─ app/config.py       설정, .env.local 에서 OPENAI_API_KEY · ITSM 접속 정보 로드
@@ -74,7 +74,7 @@ cp .env.local.example .env.local      # OPENAI_API_KEY 입력 (이미 있으면 
 | `ITSM_TIMEOUT_SECONDS` | `10` | ITSM API 호출 시간 제한 |
 | `AGENT_DATA_DIR` | `./data` | `agent.db`, `agent_history.db` 위치 |
 
-- 키·secret 은 `os.environ`, 로그, API 응답, Agent 실행 context, 대화 이력에 넣지 않습니다. OpenAI 오류 메시지에 키 일부가 섞이면 `sk-***` 로 가립니다.
+- 키·secret 같은 비밀 값은 `os.environ`, 로그, API 응답, Agent 실행 context, 대화 이력에 넣지 않습니다. OpenAI 오류 메시지에 키 일부가 섞이면 `sk-***` 로 가립니다.
 - 모델 `gpt-6-luna`, reasoning effort `high` 는 고정입니다(`app/config.py`). 사용할 수 없으면 **다른 모델로 대체하지 않고** 원인을 응답합니다.
 - 세션·대화 초기화: `.venv/bin/python scripts/reset_db.py` (ITSM 데이터는 건드리지 않음)
 
@@ -129,20 +129,46 @@ ITSM 이나 OpenAI 를 호출하지 않습니다. ITSM 은 인증·디렉터리 
 | 파일 | 확인 내용 |
 |---|---|
 | `tests/test_session.py` | ITSM 디렉터리 사용자 목록, 사용자 전환·세션, 위임 토큰 서버 보관·갱신, 세션 필수, 위조 쿠키, ITSM 연결 실패·자격증명 거부, 화면 |
-| `tests/test_agent.py` | 키 없음 안내, 모델·reasoning 구성, 백엔드 확인 context 전달, 메시지로 신원 변경 불가, 도구 없음, 대화 이력, 모델 오류 비대체, 키 비노출 |
+| `tests/test_agent.py` | 키 없음 안내, 모델·reasoning 구성, 백엔드 확인 context 전달, 메시지로 신원 변경 불가, 정확히 세 도구, 대화 이력, 모델 오류 비대체, 키 비노출 |
 
-실제 모델 연결 확인(비용 발생): ITSM API 와 이 서버를 띄운 뒤 `.venv/bin/python scripts/agent_smoke.py`.
+### 출시 보증과 coverage
+
+기본 자동화는 `FakeModel`과 `httpx.MockTransport`만 사용하며 실제 OpenAI/ITSM network를 호출하지 않습니다. 전체 회귀와 U4 검증은 다음 순서로 실행합니다.
+
+```bash
+.venv/bin/python -m pytest -q
+.venv/bin/python -m coverage erase
+.venv/bin/python -m coverage run --source=app,scripts -m pytest -q
+.venv/bin/python -m coverage json -o coverage.json
+```
+
+`scripts/changed_line_coverage.py`는 승인된 Unit별 source manifest·plan·baseline을 먼저 freeze하고 U1~U4 합집합의 변경 실행 가능 line coverage를 계산합니다. 기준은 80%이며 missing source나 frozen input drift를 실패로 처리합니다. `.release-assurance/` evidence는 source revision에 결합되어 원자적으로 finalize되고, baseline과 final 전체 회귀는 동일 명령·환경이어야 합니다.
+
+### 실제 연동 smoke와 NFR8 측정 — 기본 자동화와 별도
+
+실제 연동은 비용과 외부 변경 가능성이 있으므로 기본 pytest/coverage에서 절대 실행하지 않습니다. 사람이 실행 의사를 **명시**하고 다음 prerequisites를 모두 준비한 경우에만 별도 실행합니다.
+
+- explicit `target` base URL
+- explicit 테스트 `user`
+- 해당 환경의 `credential`(서버 환경으로만 주입하며 출력·artifact에 기록하지 않음)
+- 생성/수정용 테스트 데이터와 cleanup 계획
+
+```bash
+.venv/bin/python scripts/agent_smoke.py --base-url https://explicit-target.example --user explicit-test-user
+```
+
+실제 smoke와 NFR8 browser 측정을 수행하지 않았으면 결과는 `not_measured`입니다. FakeModel/MockTransport 성공이나 전체 회귀 성공을 실제 환경 성과로 바꾸어 기록하지 않습니다.
 
 ---
 
-## 6. 도구를 추가할 위치
+## 6. 도구 구현 위치
 
 | 위치 | 할 일 |
 |---|---|
-| `app/agent/assistant.py` 의 `TOOLS` | `@function_tool` 로 만든 도구를 등록 (현재 빈 목록) |
-| `app/agent/assistant.py` 의 `INSTRUCTIONS` | 필요하면 도구 사용 지침 추가 (현재는 페르소나 한 줄만 있음) |
-| `app/agent/tools.py` (새 파일 권장) | 도구 구현. `RunContextWrapper[AgentUserContext]` 의 `ctx.context` 로 실행 주체 확인 |
-| `app/itsm_auth.py` 또는 새 ITSM 클라이언트 모듈 | ITSM 업무 API 호출. 현재는 인증·디렉터리 호출만 있음 |
-| `app/session.py` 의 `itsm_token_for` | 현재 사용자의 유효한 ITSM 위임 토큰을 얻는 방법. 도구가 토큰·클라이언트를 얻는 방법은 구현하면서 결정 (현재 context 에는 사용자 정보만 있음) |
+| `app/agent/assistant.py`의 누적 registry | `ticket_read`, `ticket_write`, `ticket_update` 세 도구만 등록하며 duplicate 이름을 거부 |
+| `app/agent/assistant.py`의 `INSTRUCTIONS` | 현재 고정 페르소나와 간결한 한국어 응답 지침을 유지하며 ticket ID 같은 외부 데이터를 지침에 넣지 않음 |
+| `app/ticketing/tools.py`, `create_tools.py`, `update_tools.py` | `RunContextWrapper[AgentUserContext]`의 서버 전용 capability로 세 업무 도구 실행 |
+| `app/ticketing/gateway.py` | ITSM v2 티켓 API를 위임 사용자 자격으로 한 번씩 호출하고 allowlist 결과만 반환 |
+| `app/ticketing/capability.py`, `app/session.py` | 현재 사용자에 고정된 요청 범위 capability와 갱신 가능한 서버 전용 credential 수명주기 |
 | `app/agent/service.py` | `Runner.run` 호출 위치 (실행 설정, 오류 처리) |
-| `tests/test_agent.py` | `test_agent_has_no_tools` 는 도구 추가 시 기대값을 바꿔야 함 |
+| `tests/test_agent.py` | `test_agent_has_cumulative_ticket_tools`로 누적 registry가 정확히 세 도구인지 회귀 검증 |

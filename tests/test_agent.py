@@ -1,4 +1,4 @@
-"""Agent 엔드포인트, SDK 실행 context, 도구 없음, 대화 이력, 오류 처리 검증.
+"""Agent 엔드포인트, SDK 실행 context, U1 도구, 대화 이력, 오류 처리 검증.
 
 실제 OpenAI API는 호출하지 않습니다. SDK 의 Agent/Runner 는 그대로 사용하고 모델만 FakeModel 로 바꿉니다.
 """
@@ -6,6 +6,12 @@
 from __future__ import annotations
 
 import dataclasses
+import base64
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
 
 import httpx
 import openai
@@ -17,11 +23,49 @@ from app.agent import service as service_module
 from app.agent.assistant import INSTRUCTIONS, TOOLS, build_agent
 from app.agent.context import AgentUserContext
 from app.agent.service import AgentService, redact
-from app.config import load_api_key
+from app.config import _load_refresh_key_ring, load_api_key
 from app.main import create_app
 from tests.conftest import FakeItsm, FakeModel, login, make_settings
 
 FAKE_KEY = "sk-test-0123456789abcdefSECRET"
+
+
+def _encoded_key(byte: bytes) -> str:
+    return base64.urlsafe_b64encode(byte * 32).decode("ascii")
+
+
+def test_refresh_key_ring_config_accepts_current_and_verification_only_previous_key():
+    config, error = _load_refresh_key_ring(
+        {
+            "TICKET_REFRESH_KEYS_JSON": json.dumps(
+                {"kid-current": _encoded_key(b"c"), "kid-previous": _encoded_key(b"p")}
+            ),
+            "TICKET_REFRESH_CURRENT_KID": "kid-current",
+            "TICKET_REFRESH_VERIFICATION_SECONDS": str(24 * 60 * 60),
+        }
+    )
+    assert error is None and config is not None
+    assert config.current_kid == "kid-current"
+    assert set(config.keys) == {"kid-current", "kid-previous"}
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"TICKET_REFRESH_KEYS_JSON": "{}", "TICKET_REFRESH_CURRENT_KID": "kid", "TICKET_REFRESH_VERIFICATION_SECONDS": "86400"},
+        {"TICKET_REFRESH_KEYS_JSON": "not-json", "TICKET_REFRESH_CURRENT_KID": "kid", "TICKET_REFRESH_VERIFICATION_SECONDS": "86400"},
+        {"TICKET_REFRESH_KEYS_JSON": json.dumps({"known": _encoded_key(b"k")}), "TICKET_REFRESH_CURRENT_KID": "unknown", "TICKET_REFRESH_VERIFICATION_SECONDS": "86400"},
+        {"TICKET_REFRESH_KEYS_JSON": json.dumps({"kid": _encoded_key(b"k")}), "TICKET_REFRESH_CURRENT_KID": "kid", "TICKET_REFRESH_VERIFICATION_SECONDS": "60"},
+        {"TICKET_REFRESH_KEYS_JSON": json.dumps({"2026.10": _encoded_key(b"k")}), "TICKET_REFRESH_CURRENT_KID": "2026.10", "TICKET_REFRESH_VERIFICATION_SECONDS": "86400"},
+        {"TICKET_REFRESH_KEYS_JSON": json.dumps({"키": _encoded_key(b"k")}), "TICKET_REFRESH_CURRENT_KID": "키", "TICKET_REFRESH_VERIFICATION_SECONDS": "86400"},
+        {"TICKET_REFRESH_KEYS_JSON": json.dumps({"k" * 65: _encoded_key(b"k")}), "TICKET_REFRESH_CURRENT_KID": "k" * 65, "TICKET_REFRESH_VERIFICATION_SECONDS": "86400"},
+        {"TICKET_REFRESH_KEYS_JSON": json.dumps({"kid": _encoded_key(b"k"), "bad.key": _encoded_key(b"p")}), "TICKET_REFRESH_CURRENT_KID": "kid", "TICKET_REFRESH_VERIFICATION_SECONDS": "86400"},
+    ],
+)
+def test_refresh_key_ring_config_fails_closed_without_exposing_secret(values):
+    config, error = _load_refresh_key_ring(values)
+    assert config is None and error
+    assert values["TICKET_REFRESH_KEYS_JSON"] not in error
 
 
 @pytest.fixture
@@ -73,10 +117,11 @@ def test_settings_repr_hides_key(tmp_path):
 # ---------- Agent 구성 ----------
 
 
-def test_agent_has_no_tools():
-    assert TOOLS == []
+def test_agent_has_cumulative_ticket_tools():
+    assert [tool.name for tool in TOOLS] == ["ticket_read", "ticket_write", "ticket_update"]
     agent = build_agent(FakeModel())
-    assert agent.tools == [] and agent.handoffs == [] and agent.mcp_servers == []
+    assert [tool.name for tool in agent.tools] == ["ticket_read", "ticket_write", "ticket_update"]
+    assert agent.handoffs == [] and agent.mcp_servers == []
 
 
 def test_real_service_uses_requested_model_and_reasoning(tmp_path):
@@ -86,7 +131,7 @@ def test_real_service_uses_requested_model_and_reasoning(tmp_path):
     assert isinstance(service.agent.model, OpenAIResponsesModel)
     assert service.agent.model.model == "gpt-6-luna"
     assert service.agent.model_settings.reasoning.effort == "high"
-    assert service.agent.tools == []
+    assert [tool.name for tool in service.agent.tools] == ["ticket_read", "ticket_write", "ticket_update"]
 
 
 def test_instructions_contain_no_ticket_data():
@@ -108,11 +153,17 @@ def test_backend_verified_context_is_passed_to_runner(agent_client, fake_model, 
     assert isinstance(ctx, AgentUserContext)
     assert (ctx.user_id, ctx.username, ctx.role) == (user["id"], username, role)
     assert ctx.permissions == frozenset(user["permissions"])
+    assert ctx.current_turn_evidence.user_id == user["id"]
+    assert ctx.current_turn_evidence.session_id
+    assert ctx.current_turn_evidence.conversation_id
+    assert ctx.current_turn_evidence.decision == "revise_or_ambiguous"
+    assert "티켓 좀 조회해줘" not in repr(ctx)
     assert call["session"] is not None  # SDK Session 으로 이력 관리
 
     (model_call,) = fake_model.calls
     assert model_call["system_instructions"] == INSTRUCTIONS
-    assert model_call["tools"] == [] and model_call["handoffs"] == []
+    assert [tool.name for tool in model_call["tools"]] == ["ticket_read", "ticket_write", "ticket_update"]
+    assert model_call["handoffs"] == []
     assert model_call["model_settings"].reasoning.effort == "high"
 
 
@@ -141,10 +192,10 @@ def test_context_and_model_input_exclude_api_key(tmp_path, runner_spy):
     assert FAKE_KEY.encode() not in (tmp_path / "agent_history.db").read_bytes()
 
 
-def test_agent_chat_does_not_touch_itsm_business_api(agent_client, fake_itsm):
+def test_agent_chat_without_tool_call_does_not_touch_itsm_business_api(agent_client, fake_itsm):
     login(agent_client, "admin01")
     assert chat(agent_client, "ChatGPT 장애 티켓을 새로 등록해줘").status_code == 200
-    # 도구가 없으므로 인증·디렉터리 외의 ITSM API 는 호출하지 않습니다.
+    # 모델이 도구를 호출하지 않으면 인증·디렉터리 외의 ITSM API 는 호출하지 않습니다.
     assert all(p.startswith(("/api/v2/auth/", "/api/v2/users", "/api/v2/me")) for p in fake_itsm.paths())
 
 
@@ -213,6 +264,86 @@ def test_model_errors_are_reported_without_fallback(settings, error, status, cod
     assert "다른 모델로 대체하지 않았습니다" in detail["message"]
     assert FAKE_KEY not in res.text
     assert len(model.calls) == 1  # 다른 모델로 재시도하지 않음
+
+
+def test_malicious_model_error_body_is_absent_from_api_logs_and_failure_output(settings, caplog, tmp_path):
+    canaries = [
+        "RAW-MODEL-PROBLEM-CANARY",
+        "ghp_MODEL_CREDENTIAL_CANARY",
+        "Bearer eyJMODEL.JWT.CANARY",
+        "client_secret=MODEL-CLIENT-SECRET-CANARY",
+        "api-key:MODEL-AZURE-KEY-CANARY",
+    ]
+    raw_message = " | ".join(canaries)
+    request = httpx.Request("POST", "https://api.openai.com/v1/responses")
+    error = openai.BadRequestError(
+        raw_message,
+        response=httpx.Response(400, request=request, headers={"x-request-id": "req_SAFE12345678"}),
+        body={"error": {"message": raw_message, "credential": canaries[1]}},
+    )
+    model = FakeModel(error=error)
+    caplog.set_level("DEBUG")
+    with TestClient(
+        create_app(settings, agent_service=AgentService(settings, model=model), itsm_client=FakeItsm().client())
+    ) as client:
+        login(client, "admin01")
+        response = chat(client, "오류 경계 검증")
+    observations = response.text + caplog.text
+    assert response.status_code == 502
+    assert response.json()["detail"]["code"] == "model_request_rejected"
+    assert "req_SAFE12345678" in observations
+    assert all(canary not in observations for canary in canaries)
+
+    malicious_request_id_error = openai.BadRequestError(
+        raw_message,
+        response=httpx.Response(400, request=request, headers={"x-request-id": canaries[1]}),
+        body={"error": {"message": raw_message}},
+    )
+    with TestClient(
+        create_app(
+            settings,
+            agent_service=AgentService(settings, model=FakeModel(error=malicious_request_id_error)),
+            itsm_client=FakeItsm().client(),
+        )
+    ) as client:
+        login(client, "member01")
+        malicious_request_id_response = chat(client, "악성 request ID 경계 검증")
+    observations += malicious_request_id_response.text + caplog.text
+    assert all(canary not in observations for canary in canaries)
+
+    script = """
+import os
+import httpx
+import openai
+from fastapi.testclient import TestClient
+from app.agent.service import AgentService
+from app.main import create_app
+from tests.conftest import FakeItsm, FakeModel, login, make_settings
+from pathlib import Path
+
+raw = os.environ['MODEL_CANARY']
+request = httpx.Request('POST', 'https://api.openai.com/v1/responses')
+error = openai.BadRequestError(
+    raw,
+    response=httpx.Response(400, request=request),
+    body={'error': {'message': raw}},
+)
+settings = make_settings(Path(os.environ['MODEL_TEST_DIR']))
+with TestClient(create_app(settings, agent_service=AgentService(settings, model=FakeModel(error=error)), itsm_client=FakeItsm().client())) as client:
+    login(client, 'admin01')
+    observed = client.post('/api/agent/chat', json={'message': 'failure output'}).json()
+assert observed == {'intentional': 'failure'}
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).resolve().parents[1],
+        env={**os.environ, "MODEL_CANARY": raw_message, "MODEL_TEST_DIR": str(tmp_path)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode != 0 and "AssertionError" in completed.stderr
+    assert all(canary not in completed.stdout + completed.stderr for canary in canaries)
 
 
 def test_redact():

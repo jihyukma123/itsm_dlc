@@ -10,18 +10,22 @@ from app.session import CurrentUser, get_current_user
 router = APIRouter(prefix="/api/agent", tags=["agent"])
 
 
-@router.post("/chat", response_model=AgentChatOut)
+@router.post("/chat", response_model=AgentChatOut, response_model_exclude_none=True)
 async def chat(body: AgentChatIn, request: Request, user: CurrentUser = Depends(get_current_user)) -> AgentChatOut:
-    reply = await request.app.state.agent_service.chat(user, body.message)
-    return AgentChatOut(reply=reply, context=AgentContextOut(user_id=user.id, username=user.username, role=user.role))
+    result = await request.app.state.agent_service.chat(request, user, body.message)
+    return AgentChatOut(
+        reply=result.reply,
+        presentation=result.presentation,
+        context=AgentContextOut(user_id=user.id, username=user.username, role=user.role),
+    )
 
 
-@router.get("/messages", response_model=AgentHistoryOut)
+@router.get("/messages", response_model=AgentHistoryOut, response_model_exclude_none=True)
 async def messages(request: Request, user: CurrentUser = Depends(get_current_user)) -> AgentHistoryOut:
-    return AgentHistoryOut(messages=await request.app.state.agent_service.history(user.conversation_id))
+    return AgentHistoryOut(messages=await request.app.state.agent_service.history(request, user))
 
 
 @router.delete("/messages", status_code=status.HTTP_204_NO_CONTENT)
 async def clear_messages(request: Request, user: CurrentUser = Depends(get_current_user)) -> Response:
-    await request.app.state.agent_service.clear_history(user.conversation_id)
+    await request.app.state.agent_service.clear_history(request, user)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

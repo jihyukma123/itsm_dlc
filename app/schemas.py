@@ -7,6 +7,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.ticketing.models import TicketPresentationV1
+
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -53,11 +55,13 @@ class AgentContextOut(BaseModel):
 class AgentChatOut(BaseModel):
     reply: str
     context: AgentContextOut
+    presentation: TicketPresentationV1 | None = None
 
 
 class AgentMessageOut(BaseModel):
     role: Literal["user", "assistant"]
     text: str
+    presentation: TicketPresentationV1 | None = None
 
 
 class AgentHistoryOut(BaseModel):

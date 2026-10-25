@@ -8,7 +8,9 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
@@ -28,6 +30,7 @@ def create_app(
     settings: Settings | None = None,
     agent_service: AgentService | None = None,
     itsm_client: ItsmAuthClient | None = None,
+    utc_now: Callable[[], datetime] | None = None,
 ) -> FastAPI:
     settings = settings or load_settings()
     init_db(settings.db_path)
@@ -45,8 +48,12 @@ def create_app(
 
     app = FastAPI(title="ITSM Assistant", version="0.1.0", lifespan=lifespan)
     app.state.settings = settings
+    app.state.utc_now = utc_now or (lambda: datetime.now(timezone.utc))
     app.state.itsm = itsm
     app.state.agent_service = agent_service or AgentService(settings)
+    app.state.conversation_locks = app.state.agent_service.conversation_locks
+    app.state.agent_service.configure_ticketing(itsm)
+    app.state.agent_service.startup_cleanup()
     if not app.state.agent_service.configured:
         logger.warning(".env.local 에 OPENAI_API_KEY 가 없어 Agent 채팅이 비활성화됩니다.")
 
@@ -58,8 +65,8 @@ def create_app(
         try:
             itsm_health = await itsm.health()
             itsm_state = {"reachable": True, "version": itsm_health.get("version")}
-        except ItsmError as exc:
-            itsm_state = {"reachable": False, "error": str(exc)}
+        except ItsmError:
+            itsm_state = {"reachable": False, "error": "ITSM health check unavailable"}
         return {
             "status": "ok",
             "itsm": {"base_url": settings.itsm_base_url, **itsm_state},

@@ -1,0 +1,62 @@
+{
+  "stage": "nfr-requirements",
+  "unit": "u2-ticket-write",
+  "upstream_ids": [
+    "NFR1",
+    "NFR2",
+    "NFR3",
+    "NFR4",
+    "NFR5",
+    "NFR6",
+    "NFR7",
+    "NFR8",
+    "NFR9"
+  ],
+  "coverage": [
+    {
+      "id": "NFR1",
+      "status": "OK",
+      "target": "NFR1.1, NFR1.2, NFR1.3"
+    },
+    {
+      "id": "NFR2",
+      "status": "OK",
+      "target": "NFR2.1, NFR2.2, NFR2.3"
+    },
+    {
+      "id": "NFR3",
+      "status": "OK",
+      "target": "NFR3.1, NFR3.2, NFR3.3, NFR3.4, NFR3.5, NFR3.6, NFR3.7, NFR3.8, NFR3.9, NFR3.10"
+    },
+    {
+      "id": "NFR4",
+      "status": "N/A",
+      "target": "ticket-create returns one mutation result; list page size, cursor, and progressive read response scope belong to u1-ticket-read-skeleton"
+    },
+    {
+      "id": "NFR5",
+      "status": "OK",
+      "target": "NFR5.1"
+    },
+    {
+      "id": "NFR6",
+      "status": "OK",
+      "target": "NFR6.1, NFR6.2"
+    },
+    {
+      "id": "NFR7",
+      "status": "OK",
+      "target": "NFR7.1, NFR7.2"
+    },
+    {
+      "id": "NFR8",
+      "status": "OK",
+      "target": "NFR8.1"
+    },
+    {
+      "id": "NFR9",
+      "status": "OK",
+      "target": "NFR9.1"
+    }
+  ]
+}

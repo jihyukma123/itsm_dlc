@@ -83,15 +83,72 @@ async function switchUser(userId) {
 
 // ---------- 채팅 ----------
 
-function appendMessage(role, text) {
+const presentationKinds = new Set([
+  "ticket_progress", "ticket_list", "ticket_detail", "ticket_input", "ticket_review", "ticket_success",
+  "ticket_unavailable", "ticket_auth_error", "ticket_conflict", "ticket_rate_limited", "ticket_ambiguous",
+]);
+
+function validTextValue(value) {
+  return value && typeof value.text === "string" && ["server_allowlist", "itsm_untrusted"].includes(value.origin);
+}
+
+function validField(field) {
+  return field && typeof field.key === "string" && typeof field.label === "string" && validTextValue(field.value);
+}
+
+function validPresentation(value) {
+  if (!value || value.version !== 1 || !presentationKinds.has(value.kind) || !Array.isArray(value.blocks)) return false;
+  return value.blocks.every((block) => {
+    if (!block || typeof block.type !== "string") return false;
+    if (block.type === "paragraph") return validTextValue(block.text);
+    if (block.type === "fields") return Array.isArray(block.fields) && block.fields.every(validField);
+    if (block.type === "items") return Array.isArray(block.items) && block.items.every((row) => Array.isArray(row) && row.every(validField));
+    if (block.type === "actions") {
+      return Array.isArray(block.actions) && block.actions.every((action) =>
+        action && typeof action.label === "string" && ["provide_input", "confirm", "revise", "cancel", "retry_later", "start_over"].includes(action.action));
+    }
+    return false;
+  });
+}
+
+function renderFields(fields) {
+  const list = el("dl", { class: "ticket-fields" });
+  for (const field of fields) {
+    list.append(el("dt", {}, field.label), el("dd", {}, field.value.text));
+  }
+  return list;
+}
+
+function renderPresentation(presentation) {
+  if (!validPresentation(presentation)) return null;
+  const box = el("div", { class: `ticket-presentation ${presentation.kind}` });
+  for (const block of presentation.blocks) {
+    if (block.type === "paragraph") box.append(el("p", {}, block.text.text));
+    else if (block.type === "fields") box.append(renderFields(block.fields));
+    else if (block.type === "items") {
+      const items = el("div", { class: "ticket-items" });
+      for (const row of block.items) items.append(el("section", { class: "ticket-item" }, renderFields(row)));
+      box.append(items);
+    } else if (block.type === "actions") {
+      box.append(el("p", { class: "ticket-actions" }, block.actions.map((action) => action.label).join(" · ")));
+    }
+  }
+  return box;
+}
+
+function appendMessage(role, text, presentation = null, announce = true) {
   const log = $("chat-log");
-  log.append(el("div", { class: `msg ${role}` }, text));
+  const message = el("div", { class: `msg ${role}` }, el("div", { class: "message-text" }, text));
+  const structured = renderPresentation(presentation);
+  if (structured) message.append(structured);
+  $(announce ? "chat-live" : "chat-history").append(message);
   log.scrollTop = log.scrollHeight;
 }
 
 function renderChatLog(messages) {
-  $("chat-log").replaceChildren();
-  for (const m of messages) appendMessage(m.role, m.text);
+  $("chat-history").replaceChildren();
+  $("chat-live").replaceChildren();
+  for (const m of messages) appendMessage(m.role, m.text, m.presentation, false);
 }
 
 function renderAgentStatus() {
@@ -127,14 +184,14 @@ async function sendMessage(event) {
   if (!message || state.sending) return;
   state.sending = true;
   renderAgentStatus();
-  appendMessage("user", message);
+  appendMessage("user", message, null, false);
   input.value = "";
   const pending = el("div", { class: "msg assistant muted" }, "응답을 기다리는 중…");
-  $("chat-log").append(pending);
+  $("chat-live").append(pending);
   try {
     const data = await api("/api/agent/chat", { method: "POST", body: JSON.stringify({ message }) });
     pending.remove();
-    appendMessage("assistant", data.reply);
+    appendMessage("assistant", data.reply, data.presentation);
   } catch (err) {
     pending.remove();
     appendMessage("error", err.message);

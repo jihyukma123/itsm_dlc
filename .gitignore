@@ -12,6 +12,9 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .DS_Store
+.release-assurance/
+.coverage
+coverage.json
 
 # BEGIN AI-DLC:gitignore
 # AI-DLC: local working files

@@ -6,3 +6,5 @@ openai-agents==0.24.0
 python-dotenv==1.2.4
 pytest==9.1.1
 httpx==0.28.1
+coverage==7.17.0
+# 오프라인 설치: uv pip install --offline --find-links vendor/wheels -r requirements.txt

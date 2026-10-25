@@ -1,0 +1,27 @@
+{
+  "stage": "nfr-requirements",
+  "unit": "u1-ticket-read-skeleton",
+  "upstream_ids": [
+    "NFR1",
+    "NFR2",
+    "NFR3",
+    "NFR4",
+    "NFR5",
+    "NFR6",
+    "NFR7",
+    "NFR8",
+    "NFR9"
+  ],
+  "coverage": [
+    {"id": "NFR1", "status": "OK", "target": "NFR1.1, NFR1.2, NFR1.3, NFR1.4"},
+    {"id": "NFR2", "status": "OK", "target": "NFR2.1, NFR2.2, NFR2.3, NFR2.4, NFR2.5, NFR2.6, NFR2.7"},
+    {"id": "NFR3", "status": "OK", "target": "NFR3.1, NFR3.2"},
+    {"id": "NFR4", "status": "OK", "target": "NFR4.1, NFR4.2"},
+    {"id": "NFR5", "status": "OK", "target": "NFR5.1, NFR5.2"},
+    {"id": "NFR6", "status": "OK", "target": "NFR6.1"},
+    {"id": "NFR7", "status": "OK", "target": "NFR7.1, NFR7.2, NFR7.3, NFR7.4"},
+    {"id": "NFR8", "status": "Deferred", "target": "u4-release-assurance에서 세 tool 통합 결과의 재현 가능한 사용자 성과 측정으로 완결"},
+    {"id": "NFR9", "status": "OK", "target": "NFR9.1, NFR9.2"}
+  ],
+  "reverse": []
+}

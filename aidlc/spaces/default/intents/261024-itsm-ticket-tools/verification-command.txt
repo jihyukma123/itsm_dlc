@@ -1,0 +1,1 @@
+.venv/bin/python -m coverage run --source=app -m pytest -q && .venv/bin/python -m coverage report --fail-under=80

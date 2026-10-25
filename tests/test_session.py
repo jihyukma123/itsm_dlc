@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import json
+import os
 import sqlite3
-from datetime import timedelta
+import subprocess
+import sys
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import httpx
 import pytest
@@ -91,13 +96,40 @@ async def test_itsm_token_for_refreshes_expiring_token(tmp_path):
     with TestClient(app) as c:
         login(c, "member01")
         session_id = c.cookies.get("itsm_agent_session")
+        with sqlite3.connect(settings.db_path) as conn:
+            expiry_before = conn.execute("SELECT session_expires_at FROM sessions").fetchone()[0]
+            generation_before = conn.execute(
+                "SELECT itsm_credential_generation FROM sessions"
+            ).fetchone()[0]
         request = Request({"type": "http", "app": app, "headers": [(b"cookie", f"itsm_agent_session={session_id}".encode())]})
         with open_db(settings.db_path) as conn:
-            user = get_current_user(request, conn)
+                user = await get_current_user(request, conn)
         new_token = await itsm_token_for(request, user)
     assert new_token != user.itsm_token and fake.tokens[new_token] == "member01"
     with open_db(settings.db_path) as conn:
         assert conn.execute("SELECT itsm_token FROM sessions").fetchone()[0] == new_token
+        assert conn.execute("SELECT session_expires_at FROM sessions").fetchone()[0] == expiry_before
+        assert conn.execute(
+            "SELECT itsm_credential_generation FROM sessions"
+        ).fetchone()[0] == generation_before + 1
+
+
+def test_user_switch_creates_new_independent_eight_hour_session(settings):
+    current = [datetime(2026, 4, 1, 1, 2, 3, tzinfo=timezone.utc)]
+    fake = FakeItsm()
+    app = create_app(settings, itsm_client=fake.client(), utc_now=lambda: current[0])
+    with TestClient(app) as client:
+        login(client, "member01")
+        first = client.cookies.get("itsm_agent_session")
+        current[0] += timedelta(hours=2)
+        login(client, "desk01")
+        second = client.cookies.get("itsm_agent_session")
+    with sqlite3.connect(settings.db_path) as conn:
+        row = conn.execute(
+            "SELECT id, created_at, session_expires_at FROM sessions"
+        ).fetchone()
+    assert first != second
+    assert row == (second, "2026-04-01T03:02:03Z", "2026-04-01T11:02:03Z")
 
 
 def _unreachable_client() -> ItsmAuthClient:
@@ -129,3 +161,81 @@ def test_health_and_ui(client: TestClient):
     page = client.get("/")
     assert page.status_code == 200 and "<title>ITSM Assistant</title>" in page.text and 'id="chat-form"' in page.text
     assert client.get("/static/app.js").status_code == 200
+
+
+@pytest.mark.parametrize(
+    "failure_stage,method,path,body",
+    [
+        ("directory", "GET", "/api/users", None),
+        ("token_exchange", "POST", "/api/session", {"user_id": 1}),
+        ("me", "POST", "/api/session", {"user_id": 1}),
+        ("transport", "GET", "/api/users", None),
+    ],
+)
+def test_auth_and_directory_failures_never_reflect_raw_problem_or_transport_detail(
+    tmp_path, caplog, failure_stage, method, path, body
+):
+    canary = f"RAW-{failure_stage.upper()}-FAILURE-CANARY"
+    fake = FakeItsm()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if failure_stage == "transport":
+            raise httpx.ConnectError(canary, request=request)
+        request_body = json.loads(request.content) if request.content else {}
+        matches = (
+            failure_stage == "directory" and request.url.path == "/api/v2/users"
+        ) or (
+            failure_stage == "token_exchange"
+            and request.url.path == "/api/v2/auth/token"
+            and request_body.get("subject") is not None
+        ) or (failure_stage == "me" and request.url.path == "/api/v2/me")
+        if matches:
+            return httpx.Response(
+                401 if failure_stage == "token_exchange" else 503,
+                json={"code": "malicious_upstream_code", "detail": canary},
+                headers={"content-type": "application/problem+json"},
+            )
+        return fake.handler(request)
+
+    auth = ItsmAuthClient(
+        "http://itsm.test",
+        "itsm-agent",
+        "itsm-agent-dev-secret",
+        transport=httpx.MockTransport(handler),
+    )
+    caplog.set_level("DEBUG")
+    with TestClient(
+        create_app(make_settings(tmp_path), itsm_client=auth), raise_server_exceptions=False
+    ) as client:
+        response = client.request(method, path, json=body)
+        observations = response.text + caplog.text
+        if failure_stage == "transport":
+            observations += client.get("/api/health").text
+    assert response.status_code in (502, 503)
+    assert canary not in observations
+    assert "malicious_upstream_code" not in observations
+
+
+def test_safe_itsm_error_mapping_keeps_canary_out_of_intentional_failure_output():
+    canary = "RAW-ASSERTION-TRACEBACK-CANARY"
+    script = """
+import os
+from app.itsm_auth import ItsmApiError, ItsmUnavailableError
+from app.session import itsm_http_error
+
+observed = {
+    'api': itsm_http_error(ItsmApiError(401, 'raw-code', os.environ['CANARY'])).detail,
+    'transport': itsm_http_error(ItsmUnavailableError(os.environ['CANARY'])).detail,
+}
+assert observed == {'intentional': 'failure'}
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).resolve().parents[1],
+        env={**os.environ, "CANARY": canary},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode != 0 and "AssertionError" in completed.stderr
+    assert canary not in completed.stdout + completed.stderr

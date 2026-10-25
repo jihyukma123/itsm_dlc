@@ -1,0 +1,28 @@
+{
+  "stage": "code-generation",
+  "unit": "u4-release-assurance",
+  "version": 1,
+  "writes": [
+    {"path": "app/release_assurance/__init__.py"},
+    {"path": "app/release_assurance/models.py"},
+    {"path": "app/release_assurance/catalog.py"},
+    {"path": "app/release_assurance/evidence.py"},
+    {"path": "app/release_assurance/evaluator.py"},
+    {"path": "app/release_assurance/performance.py"},
+    {"path": "app/release_assurance/documentation.py"},
+    {"path": "scripts/release_assurance.py"},
+    {"path": "scripts/changed_line_coverage.py"},
+    {"path": "tests/test_release_assurance_models.py"},
+    {"path": "tests/test_release_assurance_catalog.py"},
+    {"path": "tests/test_release_assurance_evidence.py"},
+    {"path": "tests/test_release_assurance_evaluator.py"},
+    {"path": "tests/test_release_assurance_performance.py"},
+    {"path": "tests/test_release_assurance_documentation.py"},
+    {"path": "tests/test_release_assurance_integration.py"},
+    {"path": "tests/test_release_assurance_security.py"},
+    {"path": "tests/test_changed_line_coverage.py"},
+    {"path": "tests/test_network_isolation.py"},
+    {"path": "README.md"},
+    {"path": ".gitignore"}
+  ]
+}
