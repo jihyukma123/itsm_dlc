@@ -23,6 +23,7 @@ from fastapi import HTTPException, Request, status
 
 from app.agent.assistant import REGISTRY, build_agent
 from app.agent.context import AgentUserContext
+from app.agent.trace import AgentTraceHooks, resolve_trace_writer
 from app.config import Settings
 from app.db import open_db
 from app.itsm_auth import ItsmAuthClient
@@ -141,6 +142,7 @@ class AgentService:
         self.conversation_locks = ConversationLockProvider()
         # 기존 lifecycle 관찰 지점과의 호환을 유지한다.
         self._conversation_locks = self.conversation_locks._locks
+        self.trace_writer = resolve_trace_writer(settings.db_path.parent)
         if model is None and settings.openai_api_key:
             client = openai.AsyncOpenAI(api_key=settings.openai_api_key)
             model = OpenAIResponsesModel(model=settings.agent_model, openai_client=client)
@@ -177,6 +179,7 @@ class AgentService:
         )
 
     def startup_cleanup(self) -> None:
+        self.trace_writer.prepare_file()
         self.cursor_repository.cleanup_expired()
         self.create_repository.cleanup_expired()
         self.presentation_repository.cleanup_orphans()
@@ -277,26 +280,39 @@ class AgentService:
                 user, ticket_runtime=runtime, current_turn_evidence=turn_evidence
             )
             session = self._session(user.conversation_id)
+            trace_hooks = AgentTraceHooks(
+                self.trace_writer,
+                user_info=f"{user.username} ({user.role}, id={user.id})",
+                conversation_id=user.conversation_id,
+                user_message=message,
+                model_name=self.model_name,
+            )
+            trace_hooks.emit_turn_start()
             try:
                 result = await Runner.run(
                     self.agent,
                     message,
                     context=context,
                     session=session,
+                    hooks=trace_hooks,
                     # 추적 데이터는 외부로 보내지 않습니다. 필요하면 실험 조건에서 켜세요.
                     run_config=RunConfig(tracing_disabled=True),
                 )
             except openai.AuthenticationError as exc:
+                trace_hooks.emit_turn_error(exc)
                 raise self._failure(status.HTTP_502_BAD_GATEWAY, "agent_auth_failed", "OpenAI API 키 인증에 실패했습니다", exc)
             except openai.PermissionDeniedError as exc:
+                trace_hooks.emit_turn_error(exc)
                 raise self._failure(
                     status.HTTP_502_BAD_GATEWAY, "model_access_denied", f"모델 '{self.model_name}' 접근 권한이 없습니다", exc
                 )
             except openai.NotFoundError as exc:
+                trace_hooks.emit_turn_error(exc)
                 raise self._failure(
                     status.HTTP_502_BAD_GATEWAY, "model_unavailable", f"요청한 모델 '{self.model_name}'을(를) 사용할 수 없습니다", exc
                 )
             except openai.BadRequestError as exc:
+                trace_hooks.emit_turn_error(exc)
                 raise self._failure(
                     status.HTTP_502_BAD_GATEWAY,
                     "model_request_rejected",
@@ -304,15 +320,19 @@ class AgentService:
                     exc,
                 )
             except openai.RateLimitError as exc:
+                trace_hooks.emit_turn_error(exc)
                 raise self._failure(status.HTTP_503_SERVICE_UNAVAILABLE, "model_rate_limited", "OpenAI API 사용 한도에 걸렸습니다", exc)
             except openai.APIStatusError as exc:
+                trace_hooks.emit_turn_error(exc)
                 raise self._failure(status.HTTP_502_BAD_GATEWAY, "model_api_error", "OpenAI API 오류가 발생했습니다", exc)
             except openai.APIConnectionError as exc:
+                trace_hooks.emit_turn_error(exc)
                 logger.warning("OpenAI API 연결 실패: %s", type(exc).__name__)
                 raise api_error(
                     status.HTTP_504_GATEWAY_TIMEOUT, "model_connection_failed", "OpenAI API에 연결하지 못했습니다(네트워크 또는 시간 초과)."
                 )
             except AgentsException as exc:
+                trace_hooks.emit_turn_error(exc)
                 logger.warning("Agent 실행 실패: %s", type(exc).__name__)
                 raise api_error(status.HTTP_500_INTERNAL_SERVER_ERROR, "agent_run_failed", f"Agent 실행에 실패했습니다: {type(exc).__name__}")
             finally:
@@ -357,6 +377,9 @@ class AgentService:
                         )
                 except Exception as exc:
                     logger.warning("presentation 저장 생략: %s", type(exc).__name__)
+            trace_hooks.emit_turn_end(
+                presentation_kind=presentation.kind if presentation is not None else None
+            )
             return ChatResult(reply=reply, presentation=presentation)
 
     def _failure(self, status_code: int, code: str, summary: str, exc: openai.APIStatusError):
